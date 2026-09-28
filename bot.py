@@ -7,7 +7,7 @@ from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 
 from config import settings
-from handlers import common_router, corrections_router
+from handlers import common_router, corrections_router, zero_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -26,9 +26,11 @@ async def main():
     storage = MemoryStorage()
     dp = Dispatcher(storage=storage)
 
-    # Подключаем роутеры (порядок важен!)
-    dp.include_router(common_router)
+    # Функциональные роутеры — первыми, чтобы перехватывали сообщения до echo
     dp.include_router(corrections_router)
+    dp.include_router(zero_router)
+    # common_router — последним (содержит echo-обработчик)
+    dp.include_router(common_router)
 
     await bot.delete_webhook(drop_pending_updates=True)
 

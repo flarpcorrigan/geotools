@@ -3,7 +3,6 @@ import re
 from dataclasses import dataclass
 
 
-# Запрещённые разделители колонок (разрешены только пробел и табуляция)
 _FORBIDDEN_SEPARATORS = re.compile(r"[;|]")
 
 
@@ -58,7 +57,6 @@ def _parse_coordinate_line(
                 f"Строка {line_num}: координата {name} имеет недопустимое значение."
             )
 
-    # Округление до 3 знаков
     x = round(x, 3)
     y = round(y, 3)
     h = round(h, 3)
@@ -130,7 +128,6 @@ def process_corrections(
             )
             point_count += 1
         except ValueError:
-            # Игнорируем "мусорные" строки
             continue
 
     if point_count == 0:
