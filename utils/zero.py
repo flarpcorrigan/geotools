@@ -9,9 +9,12 @@ _FORBIDDEN_SEPARATORS = re.compile(r"[;|]")
 @dataclass
 class ZeroResult:
     """Результат перевода в условную систему координат."""
-    selected_num: str
-    selected_x: float
-    selected_y: float
+    first_num: str
+    first_x: float
+    first_y: float
+    second_num: str | None
+    second_x: float | None
+    second_y: float | None
     corrected_lines: list[str]
     total_points: int
 
@@ -61,17 +64,20 @@ def _parse_coordinate_line(line: str, line_num: int) -> tuple[str, float, float]
 
 def process_zero_transformation(
     file_content: str,
-    selected_num: str,
+    first_num: str,
+    second_num: str | None = None,
     max_lines: int = 10_000,
     max_line_length: int = 1000,
 ) -> ZeroResult:
     """
-    Переводит координаты в условную систему относительно выбранной точки.
+    Переводит координаты в условную систему.
 
     Алгоритм:
       1. Парсит все точки из файла.
-      2. Находит выбранную точку по номеру.
-      3. Пересчитывает все точки: X_new = X_old - X_selected, Y_new = Y_old - Y_selected.
+      2. Находит первую точку (станет началом координат 0, 0).
+      3. Если указана вторая точка — выполняет поворот так, чтобы вектор 
+         от первой ко второй указывал на север (вдоль оси Y).
+      4. Пересчитывает все точки.
     """
     raw_lines = file_content.strip().splitlines()
 
@@ -93,6 +99,7 @@ def process_zero_transformation(
             f"Максимум {max_lines}."
         )
 
+    # Парсим все точки
     points = []
     for i, line in enumerate(lines, 1):
         try:
@@ -107,29 +114,75 @@ def process_zero_transformation(
             "Проверьте формат файла."
         )
 
-    selected_point = None
+    # Ищем первую точку
+    first_point = None
     for num, x, y in points:
-        if num == selected_num:
-            selected_point = (num, x, y)
+        if num == first_num:
+            first_point = (num, x, y)
             break
 
-    if selected_point is None:
+    if first_point is None:
         raise ValueError(
-            f"Точка с номером «{selected_num}» не найдена в файле."
+            f"Первая точка с номером «{first_num}» не найдена в файле."
         )
 
-    _, x_sel, y_sel = selected_point
+    _, x1, y1 = first_point
 
+    # Ищем вторую точку (если указана)
+    second_point = None
+    if second_num is not None:
+        for num, x, y in points:
+            if num == second_num:
+                second_point = (num, x, y)
+                break
+
+        if second_point is None:
+            raise ValueError(
+                f"Вторая точка с номером «{second_num}» не найдена в файле."
+            )
+
+        _, x2, y2 = second_point
+
+        # Проверяем, что точки не совпадают
+        if x1 == x2 and y1 == y2:
+            raise ValueError(
+                "Первая и вторая точки совпадают. "
+                "Невозможно определить направление на север."
+            )
+
+    # Формируем результат
     corrected_lines = []
-    for num, x, y in points:
-        x_new = x - x_sel
-        y_new = y - y_sel
-        corrected_lines.append(f"{num}\t{x_new:.3f}\t{y_new:.3f}")
+
+    if second_point is None:
+        # Только сдвиг (без поворота)
+        for num, x, y in points:
+            x_new = x - x1
+            y_new = y - y1
+            corrected_lines.append(f"{num}\t{x_new:.3f}\t{y_new:.3f}")
+    else:
+        # Сдвиг + поворот (ГЕОДЕЗИЧЕСКАЯ система: Север = ось X)
+        dx = x2 - x1
+        dy = y2 - y1
+        r = math.sqrt(dx * dx + dy * dy)
+
+        for num, x, y in points:
+            # Сдвиг
+            x_shifted = x - x1
+            y_shifted = y - y1
+
+            # Поворот (вектор от точки 1 к точке 2 должен указывать на Север, т.е. на ось X)
+            x_new = (x_shifted * dx + y_shifted * dy) / r
+            y_new = (y_shifted * dx - x_shifted * dy) / r
+
+            corrected_lines.append(f"{num}\t{x_new:.3f}\t{y_new:.3f}")
 
     return ZeroResult(
-        selected_num=selected_num,
-        selected_x=x_sel,
-        selected_y=y_sel,
+        first_num=first_num,
+        first_x=x1,
+        first_y=y1,
+        second_num=second_num,
+        second_x=x2 if second_point else None,
+        second_y=y2 if second_point else None,
         corrected_lines=corrected_lines,
         total_points=len(points),
     )
