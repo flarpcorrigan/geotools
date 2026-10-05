@@ -224,18 +224,18 @@ async def handle_coor_file(message: Message, state: FSMContext, bot: Bot):
         else:
             summary += "\n"
 
+        if result.height_transform_used:
+            summary += (
+                f"📏 <b>Трансформация высот активна</b>\n"
+                f"<i>Применена геоидная поправка WGS84 ↔ Балтийская 1977</i>\n\n"
+            )
+
         summary += (
-            f"🎯 <b>Оценка точности</b> "
-            f"(обратное преобразование):\n"
+            f"🎯 <b>Оценка точности</b> (локальный расчет pyproj):\n"
             f"  Макс. отклонение X: <code>{result.max_dx:.2e}</code>\n"
             f"  Макс. отклонение Y: <code>{result.max_dy:.2e}</code>\n"
-            f"  Среднее откл. X: <code>{result.mean_dx:.2e}</code>\n"
-            f"  Среднее откл. Y: <code>{result.mean_dy:.2e}</code>\n"
-            f"  RMS откл. X: <code>{result.rms_dx:.2e}</code>\n"
-            f"  RMS откл. Y: <code>{result.rms_dy:.2e}</code>\n"
             f"  Макс. откл. H: <code>{result.max_dh:.3f}</code>\n\n"
-            f"<i>Значения в единицах исходной СК. "
-            f"Для градусов — °, для метров — м.</i>"
+            f"<i>Примечание: без системных грид-файлов горизонтальная точность ~3-4 м.</i>"
         )
 
         result_doc = FSInputFile(

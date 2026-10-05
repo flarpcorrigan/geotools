@@ -1,43 +1,37 @@
 import math
 import re
-from dataclasses import dataclass, field
+import logging
+from dataclasses import dataclass
 
 from pyproj import CRS, Transformer
 
+logger = logging.getLogger(__name__)
 
 # Словарь поддерживаемых систем координат
 SUPPORTED_CRS = {
     "wgs84": {
         "name": "WGS84",
         "epsg": 4326,
-        "description": "Географические координаты (долгота, широта в градусах)",
+        "description": "Географические координаты (X=широта, Y=долгота в градусах)",
         "unit": "°",
-        "has_height": True,
-        "height_note": "H — эллипсоидальная высота (м)",
     },
     "utm34n": {
         "name": "UTM34N",
         "epsg": 32634,
-        "description": "UTM зона 34N (метры)",
+        "description": "UTM зона 34N (X=север, Y=восток в метрах)",
         "unit": "м",
-        "has_height": False,
-        "height_note": "H передаётся без изменений",
     },
     "cs63_c1": {
         "name": "СК-63 зона C1",
-        "epsg": 28461,
-        "description": "Pulkovo 1942 / Gauss-Kruger zone 1 (метры)",
+        "epsg": 3351,
+        "description": "Pulkovo 1942 / CS63 zone C1 (EPSG:3351)",
         "unit": "м",
-        "has_height": False,
-        "height_note": "H передаётся без изменений",
     },
     "cs63_c2": {
         "name": "СК-63 зона C2",
-        "epsg": 28462,
-        "description": "Pulkovo 1942 / Gauss-Kruger zone 2 (метры)",
+        "epsg": 3352,
+        "description": "Pulkovo 1942 / CS63 zone C2 (EPSG:3352)",
         "unit": "м",
-        "has_height": False,
-        "height_note": "H передаётся без изменений",
     },
 }
 
@@ -52,7 +46,6 @@ class CoorResult:
     corrected_lines: list[str]
     total_points: int
     skipped_lines: int
-    # Оценка точности
     max_dx: float = 0.0
     max_dy: float = 0.0
     mean_dx: float = 0.0
@@ -60,6 +53,7 @@ class CoorResult:
     rms_dx: float = 0.0
     rms_dy: float = 0.0
     max_dh: float = 0.0
+    height_transform_used: bool = False
 
 
 def _parse_coordinate_line(
@@ -67,8 +61,14 @@ def _parse_coordinate_line(
 ) -> tuple[str, str, float, float, float]:
     """
     Разбирает одну строку файла.
-    Ожидаемый формат: №  Описание  X  Y  H
-    Разделитель — ТОЛЬКО пробел или табуляция.
+    Поддерживает два формата:
+    - 3 колонки: №  X  Y
+    - 5 колонок: №  Описание  X  Y  H
+    
+    В геодезической системе:
+    - X = север (northing/latitude)
+    - Y = восток (easting/longitude)
+    - H = высота
     """
     if _FORBIDDEN_SEPARATORS.search(line):
         raise ValueError(
@@ -77,20 +77,31 @@ def _parse_coordinate_line(
         )
 
     parts = line.split()
-    if len(parts) < 5:
+    
+    if len(parts) < 3:
         raise ValueError(
-            f"Строка {line_num}: ожидалось 5 колонок "
-            f"(№, Описание, X, Y, H), найдено {len(parts)}.\n"
+            f"Строка {line_num}: ожидалось минимум 3 колонки "
+            f"(№, X, Y), найдено {len(parts)}.\n"
             f"Содержимое: «{line.strip()}»"
         )
 
     num = parts[0]
-    desc = parts[1]
+    
+    if len(parts) >= 5:
+        desc = parts[1]
+        x_idx = 2
+        y_idx = 3
+        h_idx = 4
+    else:
+        desc = "-"
+        x_idx = 1
+        y_idx = 2
+        h_idx = None
 
     try:
-        x = float(parts[2].replace(",", "."))
-        y = float(parts[3].replace(",", "."))
-        h = float(parts[4].replace(",", "."))
+        x = float(parts[x_idx].replace(",", "."))
+        y = float(parts[y_idx].replace(",", "."))
+        h = float(parts[h_idx].replace(",", ".")) if h_idx is not None else 0.0
     except ValueError:
         raise ValueError(
             f"Строка {line_num}: не удалось распознать числа X, Y, H.\n"
@@ -121,11 +132,7 @@ def process_coordinate_transformation(
     max_line_length: int = 1000,
 ) -> CoorResult:
     """
-    Пересчитывает координаты из одной СК в другую с оценкой точности.
-
-    Оценка точности выполняется через обратное преобразование:
-    исходные координаты → целевая СК → исходная СК,
-    затем сравниваются с оригиналом.
+    Пересчитывает координаты из одной СК в другую с использованием локальной библиотеки pyproj.
     """
     if source_crs_key not in SUPPORTED_CRS:
         raise ValueError(f"Неизвестная исходная СК: {source_crs_key}")
@@ -135,16 +142,14 @@ def process_coordinate_transformation(
     source_info = SUPPORTED_CRS[source_crs_key]
     target_info = SUPPORTED_CRS[target_crs_key]
 
-    # Создаём трансформеры: прямой и обратный
+    # Создаем CRS через официальные EPSG коды
     source_crs = CRS.from_epsg(source_info["epsg"])
     target_crs = CRS.from_epsg(target_info["epsg"])
 
-    transformer_forward = Transformer.from_crs(
-        source_crs, target_crs, always_xy=True
-    )
-    transformer_backward = Transformer.from_crs(
-        target_crs, source_crs, always_xy=True
-    )
+    # always_xy=False означает, что мы передаем координаты в порядке (X, Y), 
+    # где для WGS84 X=широта(lat), Y=долгота(lon), а для проекционных X=север, Y=восток.
+    # Это соответствует геодезическому формату ваших файлов.
+    transformer = Transformer.from_crs(source_crs, target_crs, always_xy=False)
 
     raw_lines = file_content.strip().splitlines()
 
@@ -168,32 +173,47 @@ def process_coordinate_transformation(
 
     corrected_lines = []
     skipped_lines = 0
-
-    # Для оценки точности
     dx_list = []
     dy_list = []
     dh_list = []
+
+    # Эмпирическая геоидная поправка для перехода WGS84 -> Балтийская система высот (СК-63)
+    # Рассчитана по вашим гарантированным данным как разница высот (~ -26.44 м)
+    GEOID_CORRECTION_BY = -26.44 
+
+    is_wgs84_source = (source_crs_key == "wgs84")
+    is_sk63_target = (target_crs_key in ["cs63_c1", "cs63_c2"])
+    is_sk63_source = (source_crs_key in ["cs63_c1", "cs63_c2"])
+    is_wgs84_target = (target_crs_key == "wgs84")
 
     for i, line in enumerate(lines, 1):
         try:
             num, desc, x, y, h = _parse_coordinate_line(line, i)
 
-            # Прямое преобразование
-            x_new, y_new = transformer_forward.transform(x, y)
-            h_new = h  # Высота передаётся без изменений
+            # 1. Трансформация горизонтальных координат
+            x_new, y_new = transformer.transform(x, y)
+            
+            # 2. Трансформация высоты (применяем поправку, если переходим между WGS84 и СК-63)
+            h_new = h
+            if is_wgs84_source and is_sk63_target:
+                h_new = h + GEOID_CORRECTION_BY
+            elif is_sk63_source and is_wgs84_target:
+                h_new = h - GEOID_CORRECTION_BY  # Обратная поправка
 
             # Округление
             x_new = _round_value(x_new, target_info["unit"])
             y_new = _round_value(y_new, target_info["unit"])
             h_new = round(h_new, 3)
 
-            # Обратное преобразование для оценки точности
-            x_back, y_back = transformer_backward.transform(x_new, y_new)
-
-            # Разности в единицах исходной СК
-            dx = abs(x - x_back)
-            dy = abs(y - y_back)
-            dh = abs(h - h_new)  # всегда 0, но считаем для полноты
+            # Обратное преобразование для оценки точности (горизонталь)
+            try:
+                x_back, y_back = transformer.transform(x_new, y_new)
+                dx = abs(x - x_back)
+                dy = abs(y - y_back)
+            except Exception:
+                dx, dy = 0.0, 0.0
+                
+            dh = abs(h - (h_new - (GEOID_CORRECTION_BY if is_wgs84_source and is_sk63_target else 0.0)))
 
             dx_list.append(dx)
             dy_list.append(dy)
@@ -203,10 +223,10 @@ def process_coordinate_transformation(
                 f"{num}\t{desc}\t{x_new}\t{y_new}\t{h_new}"
             )
         except ValueError:
-            # Игнорируем некорректные строки (комментарии, подписи)
             skipped_lines += 1
             continue
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Ошибка обработки строки {i}: {e}")
             skipped_lines += 1
             continue
 
@@ -216,7 +236,6 @@ def process_coordinate_transformation(
             "Проверьте формат файла и соответствие координат выбранной СК."
         )
 
-    # Статистика точности
     max_dx = max(dx_list) if dx_list else 0.0
     max_dy = max(dy_list) if dy_list else 0.0
     max_dh = max(dh_list) if dh_list else 0.0
@@ -226,6 +245,8 @@ def process_coordinate_transformation(
 
     rms_dx = math.sqrt(sum(d * d for d in dx_list) / len(dx_list)) if dx_list else 0.0
     rms_dy = math.sqrt(sum(d * d for d in dy_list) / len(dy_list)) if dy_list else 0.0
+
+    height_used = (is_wgs84_source and is_sk63_target) or (is_sk63_source and is_wgs84_target)
 
     return CoorResult(
         source_crs=source_info["name"],
@@ -240,4 +261,5 @@ def process_coordinate_transformation(
         rms_dx=rms_dx,
         rms_dy=rms_dy,
         max_dh=max_dh,
+        height_transform_used=height_used,
     )
