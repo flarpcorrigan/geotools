@@ -7,7 +7,7 @@ from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 
 from config import settings
-from handlers import common_router, corrections_router, zero_router
+from handlers import common_router, corrections_router, zero_router, calib_router, per_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -29,6 +29,8 @@ async def main():
     # Функциональные роутеры — первыми
     dp.include_router(corrections_router)
     dp.include_router(zero_router)
+    dp.include_router(calib_router)
+    dp.include_router(per_router)
     # common_router — последним (содержит echo-обработчик)
     dp.include_router(common_router)
 

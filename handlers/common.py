@@ -12,7 +12,8 @@ from aiogram.types import (
 
 from handlers.corrections import cmd_cor as corrections_cmd_cor
 from handlers.zero import cmd_zero as zero_cmd_zero
-from handlers.coor import cmd_coor as coor_cmd_coor
+from handlers.calib import cmd_calib as calib_cmd
+from handlers.per import cmd_per as per_cmd 
 
 router = Router()
 
@@ -40,11 +41,12 @@ def main_inline_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="🎯 Условная СК", callback_data="cmd_zero"),
             ],
             [
-                InlineKeyboardButton(text=" Пересчёт СК", callback_data="cmd_coor"),
-                InlineKeyboardButton(text="📂 Конвертер (скоро)", callback_data="soon"),
+                InlineKeyboardButton(text="🔧 Калибровка", callback_data="cmd_calib"),
+                InlineKeyboardButton(text="🔄 Пересчет", callback_data="cmd_per"),
             ],
             [
                 InlineKeyboardButton(text="☀️ Солнце (скоро)", callback_data="soon"),
+                InlineKeyboardButton(text="📂 Конвертер (скоро)", callback_data="soon"),
             ],
         ]
     )
@@ -142,10 +144,17 @@ async def cb_zero(callback: CallbackQuery, state: FSMContext):
     await zero_cmd_zero(callback.message, state)
 
 
-@router.callback_query(F.data == "cmd_coor")
-async def cb_coor(callback: CallbackQuery, state: FSMContext):
+@router.callback_query(F.data == "cmd_calib")
+async def cb_calib(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
-    await coor_cmd_coor(callback.message, state)
+    from handlers.calib import cmd_calib as calib_cmd
+    await calib_cmd(callback.message, state)
+
+@router.callback_query(F.data == "cmd_per")
+async def cb_per(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    from handlers.per import cmd_per as per_cmd
+    await per_cmd(callback.message, state)
 
 
 @router.callback_query(F.data == "soon")
