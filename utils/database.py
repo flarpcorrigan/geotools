@@ -2,10 +2,8 @@ import aiosqlite
 import logging
 from datetime import datetime
 
-# Выделенный логгер для событий безопасности
 security_logger = logging.getLogger("geoTOOLS_SECURITY")
 security_logger.setLevel(logging.INFO)
-# Формат: [SECURITY] 2023-10-27 15:30:00 - BLOCKED: user_id=123, username=@badactor
 formatter = logging.Formatter("[SECURITY] %(asctime)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
 if not security_logger.handlers:
     ch = logging.StreamHandler()
@@ -16,7 +14,6 @@ DB_PATH = "access.db"
 
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
-        # Включаем WAL mode для устойчивости к сбоям и конкурентного доступа
         await db.execute("PRAGMA journal_mode=WAL")
         await db.execute("PRAGMA foreign_keys=ON")
         await db.execute('''
@@ -53,10 +50,28 @@ async def remove_user(user_id: int, admin_id: int):
     security_logger.info(f"REVOKED: user_id={user_id}, by admin={admin_id}")
 
 async def get_all_users() -> list:
+    """Возвращает список всех пользователей с датой добавления"""
     async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute('SELECT user_id, username FROM allowed_users')
+        cursor = await db.execute('SELECT user_id, username, added_at FROM allowed_users')
         return await cursor.fetchall()
 
+async def get_user_by_username(username: str) -> tuple[int, str] | None:
+    """Ищет пользователя по username (без символа @)"""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            'SELECT user_id, username FROM allowed_users WHERE username = ?', 
+            (username,)
+        )
+        return await cursor.fetchone()
+
+async def get_user_by_id(user_id: int) -> tuple[int, str] | None:
+    """Ищет пользователя по ID"""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            'SELECT user_id, username FROM allowed_users WHERE user_id = ?', 
+            (user_id,)
+        )
+        return await cursor.fetchone()
+
 async def log_unauthorized_access(user_id: int, username: str | None):
-    """Логирует попытку доступа без прав"""
     security_logger.warning(f"BLOCKED: user_id={user_id}, username=@{username or 'None'}")
