@@ -14,7 +14,6 @@ class AccessMiddleware(BaseMiddleware):
         event: Update,
         data: Dict[str, Any]
     ) -> Any:
-        # Извлекаем пользователя из любого типа события
         user = None
         if event.message:
             user = event.message.from_user
@@ -25,17 +24,12 @@ class AccessMiddleware(BaseMiddleware):
         elif event.chat_member:
             user = event.chat_member.from_user
 
-        # Если пользователя нет в событии (например, системное обновление), пропускаем
         if not user:
             return await handler(event, data)
 
-        # Проверка прав
         if not await is_allowed(user.id, settings.ADMIN_ID):
-            # Логируем попытку взлома/несанкционированного доступа
             await log_unauthorized_access(user.id, user.username)
             
-            # Отвечаем ТОЛЬКО на обычные сообщения. 
-            # На колбэки и инлайн не отвечаем, чтобы не "светить" активностью бота злоумышленнику.
             if event.message:
                 await event.message.answer(
                     "🚫 <b>Доступ запрещен.</b>\n"
@@ -43,8 +37,6 @@ class AccessMiddleware(BaseMiddleware):
                     "Для получения доступа обратитесь к администратору."
                 )
             
-            # Прерываем цепочку выполнения. Хендлер НЕ будет вызван.
             return
         
-        # Если доступ разрешен, передаем управление дальше
         return await handler(event, data)

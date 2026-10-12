@@ -27,18 +27,23 @@ class PerStates(StatesGroup):
 async def cmd_per(message: Message, state: FSMContext):
     cals = load_calibrations()
     if not cals:
-        await message.answer("📭 База пуста. Используйте /calib.")
+        msg = await message.answer("📭 База пуста. Используйте /calib.")
+        await state.update_data(active_message_id=msg.message_id)
         return
 
     kb = InlineKeyboardMarkup(inline_keyboard=[])
     for i, c in enumerate(cals, 1):
         kb.inline_keyboard.append([
-            InlineKeyboardButton(text=f"{i}. {c.area_name} ({c.source_cs} → {c.target_cs})", callback_data=f"per_sel_{c.area_name}")
+            InlineKeyboardButton(
+                text=f"{i}. {html.escape(c.area_name)} ({html.escape(c.source_cs)} → {html.escape(c.target_cs)})", 
+                callback_data=f"per_sel_{c.area_name}"
+            )
         ])
     kb.inline_keyboard.append([InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_per")])
 
     await state.set_state(PerStates.waiting_selection)
-    await message.answer("<b>🔄 Пересчет координат</b>\n\nВыберите калибровку:", reply_markup=kb)
+    msg = await message.answer("<b>🔄 Пересчет координат</b>\n\nВыберите калибровку:", reply_markup=kb)
+    await state.update_data(active_message_id=msg.message_id)
 
 @router.callback_query(PerStates.waiting_selection, F.data.startswith("per_sel_"))
 async def handle_selection(callback: CallbackQuery, state: FSMContext):
@@ -50,24 +55,27 @@ async def handle_selection(callback: CallbackQuery, state: FSMContext):
 
     await state.update_data(calib=cal)
     await state.set_state(PerStates.waiting_file)
-    await callback.message.edit_text(
-        f"✅ Выбрано: <b>{cal.area_name}</b>\n"
-        f"🔄 {cal.source_cs} → {cal.target_cs}\n\n"
+    msg = await callback.message.edit_text(
+        f"✅ Выбрано: <b>{html.escape(cal.area_name)}</b>\n"
+        f"🔄 {html.escape(cal.source_cs)} → {html.escape(cal.target_cs)}\n\n"
         f"Отправьте <b>.txt файл</b> для пересчета.\n"
         f"<b>Формат:</b> <code>№  Описание  x  y  h</code>\n"
         f"(разделитель: пробел или табуляция).",
         reply_markup=cancel_kb(),
     )
+    await state.update_data(active_message_id=msg.message_id)
     await callback.answer()
 
 @router.message(PerStates.waiting_file, F.document)
 async def handle_per_file(message: Message, state: FSMContext, bot: Bot):
     doc = message.document
     if not doc.file_name or not doc.file_name.lower().endswith(".txt"):
-        await message.answer("⚠️ Только .txt", reply_markup=cancel_kb())
+        msg = await message.answer("⚠️ Только .txt", reply_markup=cancel_kb())
+        await state.update_data(active_message_id=msg.message_id)
         return
     if doc.file_size and doc.file_size > 1024 * 1024:
-        await message.answer("⚠️ Файл > 1 МБ", reply_markup=cancel_kb())
+        msg = await message.answer("⚠️ Файл > 1 МБ", reply_markup=cancel_kb())
+        await state.update_data(active_message_id=msg.message_id)
         return
 
     data = await state.get_data()
@@ -87,13 +95,11 @@ async def handle_per_file(message: Message, state: FSMContext, bot: Bot):
             lines = [ln.strip() for ln in f if ln.strip() and not ln.startswith("#")]
 
         out_lines = []
-        sum_res = 0.0
         count = 0
 
         for line in lines:
             parts = line.split()
-            if len(parts) < 4: # Минимум №, x, y, h (описание опционально, но по ТЗ оно есть)
-                # Пробуем парсить как №, x, y, h
+            if len(parts) < 4:
                 if len(parts) == 4:
                     pt_id, x_str, y_str, h_str = parts[0], parts[1], parts[2], parts[3]
                     desc = "-"
@@ -110,16 +116,9 @@ async def handle_per_file(message: Message, state: FSMContext, bot: Bot):
             except ValueError:
                 continue
 
-            # Если исходная была геодезической, конвертируем входные данные (которые мы считаем B,L,H) в X,Y,Z
-            # НО: по ТЗ входной файл для /per имеет формат "№, описание, x, y, h". 
-            # Мы предполагаем, что пользователь подает координаты в исходной системе.
-            # Если исходная система была B,L,H, мы должны интерпретировать входные x,y,h как B,L,H.
             if cal.is_src_geodetic:
                 X, Y, Z = geodetic_to_cartesian(x, y, h)
                 X_new, Y_new, Z_new = apply_helmert_7param(X, Y, Z, cal.params, to_geodetic=False)
-                # Возвращаем в геодезические или оставляем в декартовых? 
-                # Обычно пересчет в местную СК дает декартовы x,y,h. Оставим их как есть, или конвертируем обратно?
-                # Для универсальности вернем декартовы x,y,h (как X,Y,Z), так как целевая СК обычно плоская.
                 x_out, y_out, h_out = X_new, Y_new, Z_new
             else:
                 x_out, y_out, h_out = apply_helmert_7param(x, y, h, cal.params, to_geodetic=False)
@@ -128,7 +127,8 @@ async def handle_per_file(message: Message, state: FSMContext, bot: Bot):
             count += 1
 
         if count == 0:
-            await message.answer("⚠️ Нет корректных точек.", reply_markup=cancel_kb())
+            msg = await message.answer("⚠️ Нет корректных точек.", reply_markup=cancel_kb())
+            await state.update_data(active_message_id=msg.message_id)
             return
 
         with open(temp_out, "w", encoding="utf-8") as f:
@@ -136,8 +136,8 @@ async def handle_per_file(message: Message, state: FSMContext, bot: Bot):
 
         summary = (
             f"✅ <b>Пересчет выполнен!</b>\n\n"
-            f"📍 Район: <code>{cal.area_name}</code>\n"
-            f"🔄 {cal.source_cs} → {cal.target_cs}\n"
+            f"📍 Район: <code>{html.escape(cal.area_name)}</code>\n"
+            f"🔄 {html.escape(cal.source_cs)} → {html.escape(cal.target_cs)}\n"
             f"📊 Обработано точек: <b>{count}</b>\n\n"
             f"<b>🎯 Оценка точности калибровки:</b>\n"
             f"  RMS: <code>{cal.params.rms:.4f}</code> м\n"
@@ -150,11 +150,15 @@ async def handle_per_file(message: Message, state: FSMContext, bot: Bot):
 
     except Exception as e:
         logger.exception("Ошибка пересчета")
-        await message.answer(f"❌ Ошибка: {html.escape(str(e))}", reply_markup=cancel_kb())
+        msg = await message.answer(f"❌ Ошибка: {html.escape(str(e))}", reply_markup=cancel_kb())
+        await state.update_data(active_message_id=msg.message_id)
     finally:
         for p in (temp_in, temp_out):
             if p and os.path.exists(p):
-                os.remove(p)
+                try:
+                    os.remove(p)
+                except OSError as e:
+                    logger.warning(f"Не удалось удалить временный файл {p}: {e}")
 
 @router.callback_query(F.data == "cancel_per")
 async def cb_cancel(callback: CallbackQuery, state: FSMContext):

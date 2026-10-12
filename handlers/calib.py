@@ -29,23 +29,25 @@ class CalibStates(StatesGroup):
 @router.message(Command("calib"))
 async def cmd_calib(message: Message, state: FSMContext):
     await state.set_state(CalibStates.waiting_source_name)
-    await message.answer(
+    msg = await message.answer(
         "<b>🔧 Калибровка (7 параметров Гельмерта)</b>\n\n"
         "<b>Шаг 1/5:</b> Введите <b>название исходной СК</b> (например: WGS84).\n"
         "Для отмены — /cancel",
         reply_markup=cancel_kb(),
     )
+    await state.update_data(active_message_id=msg.message_id)
 
 @router.message(CalibStates.waiting_source_name, F.text)
 async def handle_source_name(message: Message, state: FSMContext):
     await state.update_data(source_cs=message.text.strip())
     await state.set_state(CalibStates.waiting_source_file)
-    await message.answer(
+    msg = await message.answer(
         "<b>Шаг 2/5:</b> Отправьте <b>.txt файл</b> с исходными координатами.\n\n"
         "<b>Формат:</b> <code>№  B  L  H</code> или <code>№  x  y  h</code>\n"
         "(разделитель: пробел или табуляция). Минимум 4 точки.",
         reply_markup=cancel_kb(),
     )
+    await state.update_data(active_message_id=msg.message_id)
 
 @router.message(CalibStates.waiting_source_file, F.document)
 async def handle_source_file(message: Message, state: FSMContext, bot: Bot):
@@ -55,12 +57,13 @@ async def handle_source_file(message: Message, state: FSMContext, bot: Bot):
 async def handle_target_name(message: Message, state: FSMContext):
     await state.update_data(target_cs=message.text.strip())
     await state.set_state(CalibStates.waiting_target_file)
-    await message.answer(
+    msg = await message.answer(
         "<b>Шаг 4/5:</b> Отправьте <b>.txt файл</b> с целевыми координатами.\n\n"
         "<b>Формат:</b> <code>№  X  Y  Z</code> (или x, y, h как декартовы).\n"
         "Номера точек должны строго совпадать с первым файлом.",
         reply_markup=cancel_kb(),
     )
+    await state.update_data(active_message_id=msg.message_id)
 
 @router.message(CalibStates.waiting_target_file, F.document)
 async def handle_target_file(message: Message, state: FSMContext, bot: Bot):
@@ -69,10 +72,12 @@ async def handle_target_file(message: Message, state: FSMContext, bot: Bot):
 async def _process_calib_file(message: Message, state: FSMContext, bot: Bot, is_source: bool):
     doc = message.document
     if not doc.file_name or not doc.file_name.lower().endswith(".txt"):
-        await message.answer("⚠️ Только файлы .txt", reply_markup=cancel_kb())
+        msg = await message.answer("⚠️ Только файлы .txt", reply_markup=cancel_kb())
+        await state.update_data(active_message_id=msg.message_id)
         return
     if doc.file_size and doc.file_size > 1024 * 1024:
-        await message.answer("⚠️ Файл слишком большой (макс. 1 МБ)", reply_markup=cancel_kb())
+        msg = await message.answer("⚠️ Файл слишком большой (макс. 1 МБ)", reply_markup=cancel_kb())
+        await state.update_data(active_message_id=msg.message_id)
         return
 
     temp_path = None
@@ -93,34 +98,35 @@ async def _process_calib_file(message: Message, state: FSMContext, bot: Bot, is_
                 continue
             try:
                 pt_id = parts[0]
-                # Если 4 колонки после ID, считаем что это B, L, H (если первая > 10, это явно градусы)
-                # Или просто сохраняем как есть, а тип определим по первой точке
                 v1, v2, v3 = float(parts[1].replace(",",".")), float(parts[2].replace(",",".")), float(parts[3].replace(",","."))
-                if i == 1 and abs(v1) < 90: # Эвристика: если первая координата < 90, это широта
+                if i == 1 and abs(v1) < 90:
                     is_geodetic = True
                 points[pt_id] = (v1, v2, v3)
             except ValueError:
                 continue
 
         if len(points) < 4:
-            await message.answer("⚠️ Найдено менее 4 корректных точек. Проверьте формат.", reply_markup=cancel_kb())
+            msg = await message.answer("⚠️ Найдено менее 4 корректных точек. Проверьте формат.", reply_markup=cancel_kb())
+            await state.update_data(active_message_id=msg.message_id)
             return
 
         if is_source:
             await state.update_data(source_points=points, is_src_geodetic=is_geodetic)
             await state.set_state(CalibStates.waiting_target_name)
-            await message.answer(
+            msg = await message.answer(
                 f"✅ Принято {len(points)} точек.\n\n"
                 "<b>Шаг 3/5:</b> Введите <b>название целевой СК</b> (например: СК-63 С1).",
                 reply_markup=cancel_kb(),
             )
+            await state.update_data(active_message_id=msg.message_id)
         else:
             data = await state.get_data()
             src_pts = data.get("source_points", {})
             
             common_ids = list(set(src_pts.keys()) & set(points.keys()))
             if len(common_ids) < 4:
-                await message.answer("⚠️ Менее 4 совпадающих номеров точек в файлах.", reply_markup=cancel_kb())
+                msg = await message.answer("⚠️ Менее 4 совпадающих номеров точек в файлах.", reply_markup=cancel_kb())
+                await state.update_data(active_message_id=msg.message_id)
                 return
 
             src_coords = [src_pts[pid] for pid in common_ids]
@@ -130,7 +136,7 @@ async def _process_calib_file(message: Message, state: FSMContext, bot: Bot, is_
             await state.update_data(helmert_params=params, common_ids=common_ids)
             
             await state.set_state(CalibStates.waiting_area_name)
-            await message.answer(
+            msg = await message.answer(
                 f"✅ <b>Расчет завершен!</b>\n\n"
                 f"📊 Точек в расчете: {params.num_points}\n"
                 f"🎯 RMS невязки: <code>{params.rms:.4f}</code> м\n"
@@ -139,19 +145,25 @@ async def _process_calib_file(message: Message, state: FSMContext, bot: Bot, is_
                 f"(Только буквы, цифры, пробелы, дефисы. 3-50 символов).",
                 reply_markup=cancel_kb(),
             )
+            await state.update_data(active_message_id=msg.message_id)
 
     except Exception as e:
         logger.exception("Ошибка калибровки")
-        await message.answer(f"❌ Ошибка: {html.escape(str(e))}", reply_markup=cancel_kb())
+        msg = await message.answer(f"❌ Ошибка: {html.escape(str(e))}", reply_markup=cancel_kb())
+        await state.update_data(active_message_id=msg.message_id)
     finally:
         if temp_path and os.path.exists(temp_path):
-            os.remove(temp_path)
+            try:
+                os.remove(temp_path)
+            except OSError as e:
+                logger.warning(f"Не удалось удалить временный файл {temp_path}: {e}")
 
 @router.message(CalibStates.waiting_area_name, F.text)
 async def handle_area_name(message: Message, state: FSMContext):
     area_name = message.text.strip()
     if not validate_name(area_name):
-        await message.answer("❌ Некорректное имя. Используйте 3-50 символов (буквы, цифры, пробелы, дефисы).")
+        msg = await message.answer("❌ Некорректное имя. Используйте 3-50 символов (буквы, цифры, пробелы, дефисы).")
+        await state.update_data(active_message_id=msg.message_id)
         return
 
     data = await state.get_data()
@@ -166,15 +178,17 @@ async def handle_area_name(message: Message, state: FSMContext):
 
     if save_calibration(calib):
         await state.clear()
-        await message.answer(
+        msg = await message.answer(
             f"✅ <b>Калибровка сохранена!</b>\n\n"
-            f"📍 Район: <code>{area_name}</code>\n"
-            f"🔄 {calib.source_cs} → {calib.target_cs}\n"
+            f"📍 Район: <code>{html.escape(area_name)}</code>\n"
+            f"🔄 {html.escape(calib.source_cs)} → {html.escape(calib.target_cs)}\n"
             f"🎯 RMS: {calib.params.rms:.4f} м\n\n"
             f"Теперь используйте /per для пересчета."
         )
+        await state.update_data(active_message_id=msg.message_id)
     else:
-        await message.answer("❌ Ошибка сохранения. Попробуйте другое имя.")
+        msg = await message.answer("❌ Ошибка сохранения. Попробуйте другое имя.")
+        await state.update_data(active_message_id=msg.message_id)
 
 @router.message(Command("cancel"))
 async def cmd_cancel(message: Message, state: FSMContext):

@@ -6,9 +6,10 @@ from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from config import settings
 
-# Импорты
 from utils.database import init_db
 from middlewares.access import AccessMiddleware
+from middlewares.throttling import ThrottlingMiddleware
+from middlewares.callback_guard import CallbackGuardMiddleware
 from handlers import (
     common_router, corrections_router, zero_router, 
     calib_router, per_router, admin_router
@@ -23,7 +24,6 @@ logger = logging.getLogger(__name__)
 async def main():
     logger.info("Запуск бота geoTOOLS (Secure Mode)...")
     
-    # 1. Инициализация защищенной БД
     await init_db()
 
     bot = Bot(
@@ -34,10 +34,10 @@ async def main():
     storage = MemoryStorage()
     dp = Dispatcher(storage=storage)
 
-    # 2. ГЛОБАЛЬНАЯ ЗАЩИТА: Middleware на все типы обновлений (Update)
+    dp.update.middleware(ThrottlingMiddleware(rate_limit=1.0))
     dp.update.middleware(AccessMiddleware())
+    dp.update.middleware(CallbackGuardMiddleware())
 
-    # 3. Регистрация роутеров
     dp.include_router(admin_router)
     dp.include_router(corrections_router)
     dp.include_router(zero_router)
@@ -45,7 +45,6 @@ async def main():
     dp.include_router(per_router)
     dp.include_router(common_router)
 
-    # Очистка вебхука перед polling (безопасный старт)
     await bot.delete_webhook(drop_pending_updates=True)
     
     try:

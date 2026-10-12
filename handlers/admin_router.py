@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from aiogram import Router, F, Bot
 from aiogram.types import Message
 from aiogram.filters import Command
@@ -8,15 +9,15 @@ from utils.database import (
     get_user_by_username, get_user_by_id
 )
 
+logger = logging.getLogger(__name__)
+
 router = Router()
 router.message.filter(F.from_user.id == settings.ADMIN_ID)
 
-# Кэш с ограничением размера и временем жизни
 MAX_CACHE_SIZE = 100
 CACHE_TTL = 3600
 
 class MessageCache:
-    """Простой кэш с TTL и ограничением размера"""
     def __init__(self, max_size: int, ttl: int):
         self._cache = {}
         self._max_size = max_size
@@ -47,8 +48,8 @@ async def cleanup_previous_message(chat_id: int, bot: Bot):
     if message_id:
         try:
             await bot.delete_message(chat_id=chat_id, message_id=message_id)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Не удалось удалить сообщение {message_id} в чате {chat_id}: {e}")
         finally:
             bot_messages_cache.delete(chat_id)
 
@@ -58,18 +59,12 @@ async def send_and_track(message: Message, text: str, bot: Bot):
     bot_messages_cache.set(message.chat.id, response.message_id)
     try:
         await message.delete()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Не удалось удалить входящее сообщение: {e}")
 
 def parse_target_argument(arg: str) -> tuple[str, str | int]:
-    """
-    Парсит аргумент команды.
-    Возвращает (тип, значение):
-    - ('username', 'username_without_@') если начинается с @
-    - ('id', числовой_id) если число
-    """
     if arg.startswith('@'):
-        return ('username', arg[1:])  # Убираем символ @
+        return ('username', arg[1:])
     else:
         try:
             return ('id', int(arg))
@@ -78,7 +73,6 @@ def parse_target_argument(arg: str) -> tuple[str, str | int]:
 
 @router.message(Command("grant", "allow"))
 async def grant_access(message: Message, bot: Bot):
-    """Выдать доступ. Использование: /grant <user_id> или /grant @username"""
     bot_user = await bot.get_me()
     parts = message.text.split()
     
@@ -104,12 +98,10 @@ async def grant_access(message: Message, bot: Bot):
         )
         return
     
-    # Проверяем, не пытается ли админ выдать доступ боту
     if target_type == 'id' and target_value == bot_user.id:
         await send_and_track(message, "⚠️ Нельзя выдать доступ самому боту.", bot)
         return
     
-    # Получаем информацию о пользователе
     if target_type == 'username':
         user_info = await get_user_by_username(target_value)
         if not user_info:
@@ -121,7 +113,7 @@ async def grant_access(message: Message, bot: Bot):
             )
             return
         user_id, username = user_info
-    else:  # target_type == 'id'
+    else:
         user_info = await get_user_by_id(target_value)
         if user_info:
             user_id, username = user_info
@@ -138,7 +130,6 @@ async def grant_access(message: Message, bot: Bot):
 
 @router.message(Command("revoke", "deny"))
 async def revoke_access(message: Message, bot: Bot):
-    """Отозвать доступ. Использование: /revoke <user_id> или /revoke @username"""
     bot_user = await bot.get_me()
     parts = message.text.split()
     
@@ -164,7 +155,6 @@ async def revoke_access(message: Message, bot: Bot):
         )
         return
     
-    # Получаем ID пользователя
     if target_type == 'username':
         user_info = await get_user_by_username(target_value)
         if not user_info:
@@ -175,10 +165,9 @@ async def revoke_access(message: Message, bot: Bot):
             )
             return
         user_id, _ = user_info
-    else:  # target_type == 'id'
+    else:
         user_id = target_value
     
-    # Проверки безопасности
     if user_id == bot_user.id:
         await send_and_track(message, "⚠️ Невозможно отозвать доступ у бота.", bot)
         return
@@ -195,7 +184,6 @@ async def revoke_access(message: Message, bot: Bot):
 
 @router.message(Command("users", "list"))
 async def list_users(message: Message, bot: Bot):
-    """Показать всех пользователей с доступом и датой добавления"""
     users = await get_all_users()
     filtered_users = [(u_id, u_name, u_date) for u_id, u_name, u_date in users if u_id != settings.ADMIN_ID]
     
@@ -209,13 +197,11 @@ async def list_users(message: Message, bot: Bot):
     
     text = "📋 <b>Авторизованные пользователи:</b>\n\n"
     for u_id, u_name, u_date in filtered_users:
-        # Форматируем дату
         if u_date:
             try:
-                # Парсим дату из БД (формат: YYYY-MM-DD HH:MM:SS)
-                date_parts = u_date.split(' ')[0]  # Берём только дату без времени
+                date_parts = u_date.split(' ')[0]
                 formatted_date = f"📅 {date_parts}"
-            except:
+            except Exception:
                 formatted_date = "📅 дата неизвестна"
         else:
             formatted_date = "📅 дата неизвестна"

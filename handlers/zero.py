@@ -21,9 +21,8 @@ from utils.zero import process_zero_transformation, _parse_coordinate_line
 logger = logging.getLogger(__name__)
 router = Router()
 
-MAX_FILE_SIZE = 1 * 1024 * 1024  # 1 МБ
-ITEMS_PER_PAGE = 10  # Точек на странице
-
+MAX_FILE_SIZE = 1 * 1024 * 1024
+ITEMS_PER_PAGE = 10
 
 def cancel_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
@@ -32,7 +31,6 @@ def cancel_keyboard() -> InlineKeyboardMarkup:
         ]
     )
 
-
 def build_keyboard(
     points: list,
     page: int,
@@ -40,16 +38,6 @@ def build_keyboard(
     exclude_num: str | None = None,
     show_skip: bool = False,
 ) -> InlineKeyboardMarkup:
-    """Генерирует клавиатуру с пагинацией.
-    
-    Args:
-        points: список точек (num, x, y)
-        page: номер страницы
-        callback_prefix: префикс callback_data ('zero_first_' или 'zero_second_')
-        exclude_num: номер точки для исключения из списка
-        show_skip: показывать кнопку "Пропустить"
-    """
-    # Исключаем точку из списка
     if exclude_num:
         points = [(n, x, y) for n, x, y in points if n != exclude_num]
 
@@ -60,7 +48,6 @@ def build_keyboard(
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[])
 
-    # Кнопки с точками (по 2 в ряд)
     row = []
     for num, x, y in page_points:
         btn_text = f"№{num} ({x}, {y})"
@@ -75,7 +62,6 @@ def build_keyboard(
     if row:
         keyboard.inline_keyboard.append(row)
 
-    # Навигация по страницам
     nav_row = []
     if page > 0:
         nav_row.append(
@@ -100,7 +86,6 @@ def build_keyboard(
     if nav_row:
         keyboard.inline_keyboard.append(nav_row)
 
-    # Кнопка ручного ввода
     keyboard.inline_keyboard.append(
         [
             InlineKeyboardButton(
@@ -109,7 +94,6 @@ def build_keyboard(
         ]
     )
 
-    # Кнопка "Пропустить" (только для выбора второй точки)
     if show_skip:
         keyboard.inline_keyboard.append(
             [
@@ -119,7 +103,6 @@ def build_keyboard(
             ]
         )
 
-    # Кнопка отмены
     keyboard.inline_keyboard.append(
         [
             InlineKeyboardButton(
@@ -130,7 +113,6 @@ def build_keyboard(
 
     return keyboard
 
-
 class ZeroStates(StatesGroup):
     waiting_file = State()
     waiting_first_point = State()
@@ -138,11 +120,10 @@ class ZeroStates(StatesGroup):
     waiting_manual_first = State()
     waiting_manual_second = State()
 
-
 @router.message(Command("zero"))
 async def cmd_zero(message: Message, state: FSMContext):
     await state.set_state(ZeroStates.waiting_file)
-    await message.answer(
+    msg = await message.answer(
         "<b>🎯 Перевод в условную систему координат</b>\n\n"
         "Эта функция переводит координаты в условную систему:\n"
         "• <b>Первая точка</b> станет началом координат (0, 0)\n"
@@ -154,7 +135,7 @@ async def cmd_zero(message: Message, state: FSMContext):
         "📎 Отправьте <b>.txt</b> файл для обработки.",
         reply_markup=cancel_keyboard(),
     )
-
+    await state.update_data(active_message_id=msg.message_id)
 
 @router.message(Command("cancel"))
 async def cmd_cancel(message: Message, state: FSMContext):
@@ -164,7 +145,6 @@ async def cmd_cancel(message: Message, state: FSMContext):
         return
     await state.clear()
     await message.answer("❌ Операция отменена.")
-
 
 @router.callback_query(F.data == "cancel_zero")
 async def cb_cancel_zero(callback: CallbackQuery, state: FSMContext):
@@ -176,36 +156,36 @@ async def cb_cancel_zero(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text("❌ Операция отменена.")
     await callback.answer()
 
-
 @router.message(ZeroStates.waiting_file, F.document)
 async def handle_zero_file(message: Message, state: FSMContext, bot: Bot):
     document = message.document
     file_name = document.file_name or ""
 
     if not file_name.lower().endswith(".txt"):
-        await message.answer(
+        msg = await message.answer(
             "⚠️ Поддерживаются только файлы <b>.txt</b>.",
             reply_markup=cancel_keyboard(),
         )
+        await state.update_data(active_message_id=msg.message_id)
         return
 
     if document.file_size and document.file_size > MAX_FILE_SIZE:
-        await message.answer(
-            f"️ Файл слишком большой "
+        msg = await message.answer(
+            f"⚠️ Файл слишком большой "
             f"({document.file_size // 1024} КБ). "
             f"Максимум {MAX_FILE_SIZE // 1024} КБ.",
             reply_markup=cancel_keyboard(),
         )
+        await state.update_data(active_message_id=msg.message_id)
         return
 
     temp_input = None
 
     try:
-        temp_input_fd, temp_input_path = tempfile.mkstemp(
+        temp_input_fd, temp_input = tempfile.mkstemp(
             suffix=".txt", prefix="zero_in_"
         )
         os.close(temp_input_fd)
-        temp_input = temp_input_path
 
         tg_file = await bot.get_file(document.file_id)
         await bot.download_file(tg_file.file_path, temp_input)
@@ -225,10 +205,11 @@ async def handle_zero_file(message: Message, state: FSMContext, bot: Bot):
                 continue
 
         if not points:
-            await message.answer(
+            msg = await message.answer(
                 "⚠️ Не найдено ни одной корректной точки.",
                 reply_markup=cancel_keyboard(),
             )
+            await state.update_data(active_message_id=msg.message_id)
             return
 
         await state.update_data(
@@ -241,45 +222,51 @@ async def handle_zero_file(message: Message, state: FSMContext, bot: Bot):
         await state.set_state(ZeroStates.waiting_first_point)
         keyboard = build_keyboard(points, page=0, callback_prefix="zero_first_")
 
-        await message.answer(
+        msg = await message.answer(
             f"📋 Найдено <b>{len(points)}</b> точек.\n\n"
             f"<b>Шаг 1/2:</b> Выберите точку, которая станет началом координат (0, 0):",
             reply_markup=keyboard,
         )
+        await state.update_data(active_message_id=msg.message_id)
 
     except ValueError as e:
-        await message.answer(
+        msg = await message.answer(
             f"⚠️ <b>Ошибка в файле:</b>\n\n{html.escape(str(e))}",
             reply_markup=cancel_keyboard(),
         )
+        await state.update_data(active_message_id=msg.message_id)
     except UnicodeDecodeError:
-        await message.answer(
+        msg = await message.answer(
             "⚠️ Не удалось прочитать файл.\n"
             "Убедитесь, что кодировка — <b>UTF-8</b> "
             "(не Windows-1251).",
             reply_markup=cancel_keyboard(),
         )
+        await state.update_data(active_message_id=msg.message_id)
     except Exception:
         logger.exception("Непредвиденная ошибка в handle_zero_file")
-        await message.answer(
+        msg = await message.answer(
             "❌ Внутренняя ошибка при обработке. "
             "Попробуйте другой файл или сообщите разработчику.",
             reply_markup=cancel_keyboard(),
         )
+        await state.update_data(active_message_id=msg.message_id)
     finally:
-        pass
-
+        if temp_input and os.path.exists(temp_input):
+            try:
+                os.remove(temp_input)
+            except OSError as e:
+                logger.warning(f"Не удалось удалить временный файл {temp_input}: {e}")
 
 @router.message(ZeroStates.waiting_file, F.text)
-async def wrong_input_in_zero(message: Message):
-    await message.answer(
+async def wrong_input_in_zero(message: Message, state: FSMContext):
+    msg = await message.answer(
         "⚠️ Я жду <b>.txt файл</b> с координатами.\n"
         "Отправьте документ или нажмите кнопку отмены.",
         reply_markup=cancel_keyboard(),
     )
+    await state.update_data(active_message_id=msg.message_id)
 
-
-# ── Выбор первой точки ──
 @router.callback_query(
     ZeroStates.waiting_first_point, F.data.startswith("zero_first_")
 )
@@ -302,15 +289,15 @@ async def handle_first_point(callback: CallbackQuery, state: FSMContext):
     if data_part == "manual":
         await callback.answer()
         await state.set_state(ZeroStates.waiting_manual_first)
-        await callback.message.edit_text(
+        msg = await callback.message.edit_text(
             "✏️ <b>Шаг 1/2:</b> Напишите <b>номер первой точки</b> текстом (например: 105).\n"
             "Она станет началом координат (0, 0).\n"
             "Для отмены — /cancel или кнопка ниже.",
             reply_markup=cancel_keyboard(),
         )
+        await state.update_data(active_message_id=msg.message_id)
         return
 
-    # Выбор точки
     first_num = data_part
     await callback.answer()
     await state.update_data(first_num=first_num)
@@ -319,7 +306,6 @@ async def handle_first_point(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     points = data.get("points", [])
     
-    # Исключаем первую точку из списка и показываем кнопку "Пропустить"
     keyboard = build_keyboard(
         points, 
         page=0, 
@@ -334,7 +320,6 @@ async def handle_first_point(callback: CallbackQuery, state: FSMContext):
         f"Или нажмите <b>⏭️ Пропустить</b>, чтобы выполнить только сдвиг.",
         reply_markup=keyboard,
     )
-
 
 @router.message(ZeroStates.waiting_manual_first, F.text)
 async def handle_manual_first(message: Message, state: FSMContext):
@@ -353,15 +338,14 @@ async def handle_manual_first(message: Message, state: FSMContext):
         show_skip=True,
     )
 
-    await message.answer(
+    msg = await message.answer(
         f"✅ Первая точка. Выберите вторую точку.\n\n"
         f"Вектор от первой ко второй точке будет указывать на север.\n\n"
-        f"Или нажмите <b>️ Пропустить</b>, чтобы выполнить только сдвиг.",
+        f"Или нажмите <b>⏭️ Пропустить</b>, чтобы выполнить только сдвиг.",
         reply_markup=keyboard,
     )
+    await state.update_data(active_message_id=msg.message_id)
 
-
-# ── Выбор второй точки ──
 @router.callback_query(
     ZeroStates.waiting_second_point, F.data.startswith("zero_second_")
 )
@@ -391,45 +375,41 @@ async def handle_second_point(callback: CallbackQuery, state: FSMContext):
     if data_part == "manual":
         await callback.answer()
         await state.set_state(ZeroStates.waiting_manual_second)
-        await callback.message.edit_text(
+        msg = await callback.message.edit_text(
             "✏️ <b>Шаг 2/2:</b> Напишите <b>номер второй точки</b> текстом (например: 205).\n"
             "Вектор от первой ко второй точке будет указывать на север.\n"
             "Для отмены — /cancel или кнопка ниже.",
             reply_markup=cancel_keyboard(),
         )
+        await state.update_data(active_message_id=msg.message_id)
         return
 
-    # Обработка кнопки "Пропустить"
     if data_part == "skip":
         await callback.answer()
         await process_and_send(callback.message, state, None)
         return
 
-    # Выбор точки
     second_num = data_part
     await callback.answer()
     await process_and_send(callback.message, state, second_num)
-
 
 @router.message(ZeroStates.waiting_manual_second, F.text)
 async def handle_manual_second(message: Message, state: FSMContext):
     second_num = message.text.strip()
     await process_and_send(message, state, second_num)
 
-
-# ── Общая функция расчёта и отправки ──
 async def process_and_send(message: Message, state: FSMContext, second_num: str | None):
-    """Общая функция расчёта и отправки файла."""
     data = await state.get_data()
     file_content = data.get("file_content")
     temp_input = data.get("temp_input")
     first_num = data.get("first_num")
 
     if not file_content or not first_num:
-        await message.answer(
+        msg = await message.answer(
             "Данные не найдены. Начните заново: /zero",
             reply_markup=cancel_keyboard(),
         )
+        await state.update_data(active_message_id=msg.message_id)
         await state.clear()
         return
 
@@ -437,11 +417,10 @@ async def process_and_send(message: Message, state: FSMContext, second_num: str 
     try:
         result = process_zero_transformation(file_content, first_num, second_num)
 
-        temp_output_fd, temp_output_path = tempfile.mkstemp(
+        temp_output_fd, temp_output = tempfile.mkstemp(
             suffix=".txt", prefix="zero_out_"
         )
         os.close(temp_output_fd)
-        temp_output = temp_output_path
 
         with open(temp_output, "w", encoding="utf-8") as f:
             f.write("\n".join(result.corrected_lines))
@@ -450,7 +429,7 @@ async def process_and_send(message: Message, state: FSMContext, second_num: str 
 
         summary += (
             f"📊 <b>Начало координат (0, 0):</b>\n"
-            f"  Точка №<code>{result.first_num}</code>\n"
+            f"  Точка №<code>{html.escape(str(result.first_num))}</code>\n"
             f"  X = <code>{result.first_x:.3f}</code>\n"
             f"  Y = <code>{result.first_y:.3f}</code>\n\n"
         )
@@ -458,7 +437,7 @@ async def process_and_send(message: Message, state: FSMContext, second_num: str 
         if result.second_num is not None:
             summary += (
                 f"🧭 <b>Направление на север:</b>\n"
-                f"  Точка №<code>{result.second_num}</code>\n"
+                f"  Точка №<code>{html.escape(str(result.second_num))}</code>\n"
                 f"  X = <code>{result.second_x:.3f}</code>\n"
                 f"  Y = <code>{result.second_y:.3f}</code>\n\n"
             )
@@ -475,22 +454,24 @@ async def process_and_send(message: Message, state: FSMContext, second_num: str 
         await state.clear()
 
     except ValueError as e:
-        await message.answer(
-            f"️ <b>Ошибка:</b>\n\n{html.escape(str(e))}\n\n"
+        msg = await message.answer(
+            f"⚠️ <b>Ошибка:</b>\n\n{html.escape(str(e))}\n\n"
             f"Попробуйте выбрать другую точку или /cancel.",
             reply_markup=cancel_keyboard(),
         )
+        await state.update_data(active_message_id=msg.message_id)
     except Exception:
         logger.exception("Непредвиденная ошибка в process_and_send")
-        await message.answer(
+        msg = await message.answer(
             "❌ Внутренняя ошибка при обработке. "
             "Попробуйте другой файл или сообщите разработчику.",
             reply_markup=cancel_keyboard(),
         )
+        await state.update_data(active_message_id=msg.message_id)
     finally:
         for path in (temp_input, temp_output):
             if path and os.path.exists(path):
                 try:
                     os.remove(path)
-                except OSError:
-                    pass
+                except OSError as e:
+                    logger.warning(f"Не удалось удалить временный файл {path}: {e}")
