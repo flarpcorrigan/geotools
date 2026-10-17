@@ -10,6 +10,8 @@ from utils.database import (
 )
 
 logger = logging.getLogger(__name__)
+router = Router()
+router.message.filter(F.from_user.id == settings.ADMIN_ID)
 
 router = Router()
 router.message.filter(F.from_user.id == settings.ADMIN_ID)
@@ -209,3 +211,69 @@ async def list_users(message: Message, bot: Bot):
         text += f"👤 <code>{u_id}</code> — @{u_name or 'Без username'}\n   {formatted_date}\n"
     
     await send_and_track(message, text, bot)
+
+
+@router.message(Command("log"))
+async def handle_log_command(message: Message, bot: Bot):
+    """
+    Отправляет логи администратору.
+    Использование:
+    /log - отправляет файл лога целиком (до 5 МБ)
+    /log <N> - отправляет последние N строк лога текстом (макс. 2000)
+    """
+    log_file_path = "logs/bot.log"
+    if not os.path.exists(log_file_path):
+        await message.answer("⚠️ Файл логов не найден. Возможно, бот только что запущен.")
+        return
+
+    parts = message.text.split()
+    
+    # Если указан аргумент (количество строк)
+    if len(parts) > 1:
+        try:
+            n_lines = int(parts[1])
+            if n_lines <= 0 or n_lines > 2000:
+                await message.answer(
+                    "⚠️ Укажите число строк от 1 до 2000.\nПример: <code>/log 50</code>",
+                    parse_mode="HTML"
+                )
+                return
+            
+            with open(log_file_path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+            
+            last_lines = lines[-n_lines:]
+            text = "".join(last_lines)
+            
+            await message.answer(
+                f"📋 <b>Последние {len(last_lines)} строк лога:</b>\n\n{hpre(text)}",
+                parse_mode="HTML"
+            )
+            try:
+                await message.delete()
+            except Exception:
+                pass
+            return
+        except ValueError:
+            await message.answer(
+                "⚠️ Неверный формат. Используйте <code>/log</code> или <code>/log &lt;число&gt;</code>",
+                parse_mode="HTML"
+            )
+            return
+
+    # Отправка файла целиком
+    try:
+        log_file = FSInputFile(log_file_path)
+        await bot.send_document(
+            chat_id=message.chat.id,
+            document=log_file,
+            caption="📄 <b>Файл логов бота</b>\n\n<i>Последние события находятся в конце файла.</i>",
+            parse_mode="HTML"
+        )
+        try:
+            await message.delete()
+        except Exception:
+            pass
+    except Exception as e:
+        logger.error(f"Ошибка при отправке лога: {e}")
+        await message.answer(f"❌ Ошибка при отправке файла лога: {e}")
