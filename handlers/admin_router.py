@@ -1,8 +1,9 @@
-import asyncio
+import os
 import logging
 from aiogram import Router, F, Bot
-from aiogram.types import Message
+from aiogram.types import Message, FSInputFile
 from aiogram.filters import Command
+from aiogram.utils.markdown import hpre
 from config import settings
 from utils.database import (
     add_user, remove_user, get_all_users, 
@@ -11,70 +12,51 @@ from utils.database import (
 
 logger = logging.getLogger(__name__)
 router = Router()
+
+# Глобальная защита: роутер реагирует только на сообщения от главного админа
 router.message.filter(F.from_user.id == settings.ADMIN_ID)
 
-router = Router()
-router.message.filter(F.from_user.id == settings.ADMIN_ID)
-
-MAX_CACHE_SIZE = 100
-CACHE_TTL = 3600
-
-class MessageCache:
-    def __init__(self, max_size: int, ttl: int):
-        self._cache = {}
-        self._max_size = max_size
-        self._ttl = ttl
-    
-    def get(self, chat_id: int) -> int | None:
-        if chat_id not in self._cache:
-            return None
-        message_id, timestamp = self._cache[chat_id]
-        if asyncio.get_event_loop().time() - timestamp > self._ttl:
-            del self._cache[chat_id]
-            return None
-        return message_id
-    
-    def set(self, chat_id: int, message_id: int):
-        if len(self._cache) >= self._max_size:
-            oldest_key = min(self._cache, key=lambda k: self._cache[k][1])
-            del self._cache[oldest_key]
-        self._cache[chat_id] = (message_id, asyncio.get_event_loop().time())
-    
-    def delete(self, chat_id: int):
-        self._cache.pop(chat_id, None)
-
-bot_messages_cache = MessageCache(MAX_CACHE_SIZE, CACHE_TTL)
-
-async def cleanup_previous_message(chat_id: int, bot: Bot):
-    message_id = bot_messages_cache.get(chat_id)
-    if message_id:
-        try:
-            await bot.delete_message(chat_id=chat_id, message_id=message_id)
-        except Exception as e:
-            logger.debug(f"Не удалось удалить сообщение {message_id} в чате {chat_id}: {e}")
-        finally:
-            bot_messages_cache.delete(chat_id)
-
-async def send_and_track(message: Message, text: str, bot: Bot):
-    await cleanup_previous_message(message.chat.id, bot)
-    response = await message.answer(text)
-    bot_messages_cache.set(message.chat.id, response.message_id)
-    try:
-        await message.delete()
-    except Exception as e:
-        logger.debug(f"Не удалось удалить входящее сообщение: {e}")
+# Кэш для хранения ID последних сообщений бота (чтобы удалять старые и не спамить)
+bot_messages_cache: dict[int, int] = {}
 
 def parse_target_argument(arg: str) -> tuple[str, str | int]:
+    """
+    Парсит аргумент команды.
+    Возвращает (тип, значение):
+    - ('username', 'username_without_@') если начинается с @
+    - ('id', числовой_id) если число
+    """
     if arg.startswith('@'):
-        return ('username', arg[1:])
+        return ('username', arg[1:])  # Убираем символ @
     else:
         try:
             return ('id', int(arg))
         except ValueError:
             return ('invalid', arg)
 
+async def cleanup_previous_message(chat_id: int, bot: Bot):
+    message_id = bot_messages_cache.get(chat_id)
+    if message_id:
+        try:
+            await bot.delete_message(chat_id=chat_id, message_id=message_id)
+        except Exception:
+            pass
+        finally:
+            if chat_id in bot_messages_cache:
+                del bot_messages_cache[chat_id]
+
+async def send_and_track(message: Message, text: str, bot: Bot):
+    await cleanup_previous_message(message.chat.id, bot)
+    response = await message.answer(text)
+    bot_messages_cache[message.chat.id] = response.message_id
+    try:
+        await message.delete()
+    except Exception:
+        pass
+
 @router.message(Command("grant", "allow"))
 async def grant_access(message: Message, bot: Bot):
+    """Выдать доступ. Использование: /grant <user_id> или /grant @username"""
     bot_user = await bot.get_me()
     parts = message.text.split()
     
@@ -132,6 +114,7 @@ async def grant_access(message: Message, bot: Bot):
 
 @router.message(Command("revoke", "deny"))
 async def revoke_access(message: Message, bot: Bot):
+    """Отозвать доступ. Использование: /revoke <user_id> или /revoke @username"""
     bot_user = await bot.get_me()
     parts = message.text.split()
     
@@ -186,6 +169,7 @@ async def revoke_access(message: Message, bot: Bot):
 
 @router.message(Command("users", "list"))
 async def list_users(message: Message, bot: Bot):
+    """Показать всех пользователей с доступом и датой добавления"""
     users = await get_all_users()
     filtered_users = [(u_id, u_name, u_date) for u_id, u_name, u_date in users if u_id != settings.ADMIN_ID]
     
@@ -222,8 +206,10 @@ async def handle_log_command(message: Message, bot: Bot):
     /log <N> - отправляет последние N строк лога текстом (макс. 2000)
     """
     log_file_path = "logs/bot.log"
+    
+    # Проверяем существование файла (здесь используется os, который импортирован в начале)
     if not os.path.exists(log_file_path):
-        await message.answer("⚠️ Файл логов не найден. Возможно, бот только что запущен.")
+        await message.answer("⚠️ Файл логов не найден. Возможно, бот только что запущен или папка logs не создана.")
         return
 
     parts = message.text.split()
